@@ -13,6 +13,9 @@
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
 
+// zlibのインクルード
+#include <zlib.h>
+
 // ==========================================
 // 1. データ構造 (Eigenのベクトルを活用)
 // ==========================================
@@ -54,29 +57,77 @@ struct Timer {
 Image3D loadFromMHD(const std::string& mhdPath) {
 	std::ifstream ifs(mhdPath);
 	if (!ifs) throw std::runtime_error("File not found: " + mhdPath);
+
+	// 1. ヘッダー解析
 	std::string line, key, dummy;
 	std::map<std::string, std::string> meta;
 	while (std::getline(ifs, line)) {
 		if (line.find('=') == std::string::npos) continue;
-		std::stringstream ss(line); ss >> key >> dummy;
-		std::string val; std::getline(ss, val);
+		std::stringstream ss(line);
+		ss >> key >> dummy;
+		std::string val;
+		std::getline(ss, val);
 		size_t f = val.find_first_not_of(" \t\r\n"), l = val.find_last_not_of(" \t\r\n");
 		if (f != std::string::npos) meta[key] = val.substr(f, l - f + 1);
 	}
-	int nx, ny, nz; std::stringstream ss(meta["DimSize"]); ss >> nx >> ny >> nz;
+
+	// 2. 基本情報の抽出
+	int nx, ny, nz;
+	{ std::stringstream ss(meta["DimSize"]); ss >> nx >> ny >> nz; }
 	Image3D vol(nx, ny, nz);
-	std::stringstream ssS(meta["ElementSpacing"]); ssS >> vol.sx >> vol.sy >> vol.sz;
-	std::stringstream ssO(meta["Offset"]); ssO >> vol.ox >> vol.oy >> vol.oz;
+	{ std::stringstream ss(meta["ElementSpacing"]); ss >> vol.sx >> vol.sy >> vol.sz; }
+	{ std::stringstream ss(meta["Offset"]); ss >> vol.ox >> vol.oy >> vol.oz; }
+
+	bool isCompressed = (meta["CompressedData"] == "True");
+	size_t voxelCount = (size_t)nx * ny * nz;
+	std::vector<short> buffer(voxelCount);
+
+	// 3. バイナリデータの読み込み
 	std::string dir = mhdPath.substr(0, mhdPath.find_last_of("/\\") + 1);
-	std::ifstream rfs(dir + meta["ElementDataFile"], std::ios::binary);
-	if (meta["ElementType"] == "MET_SHORT") {
-		std::vector<short> temp(vol.data.size()); rfs.read((char*)temp.data(), vol.data.size() * 2);
-		for (size_t i = 0; i < temp.size(); ++i) vol.data[i] = (float)temp[i];
+	std::string dataPath = dir + meta["ElementDataFile"];
+	std::ifstream rfs(dataPath, std::ios::binary | std::ios::ate);
+	if (!rfs) throw std::runtime_error("Data file not found: " + dataPath);
+
+	size_t fileSize = rfs.tellg();
+	rfs.seekg(0, std::ios::beg);
+
+	if (isCompressed) {
+		// --- zlib解凍プロセス ---
+		std::vector<unsigned char> compressedData(fileSize);
+		rfs.read((char*)compressedData.data(), fileSize);
+
+		z_stream strm = {};
+		strm.next_in = compressedData.data();
+		strm.avail_in = (uInt)fileSize;
+		strm.next_out = (Bytef*)buffer.data();
+		strm.avail_out = (uInt)(voxelCount * sizeof(short));
+
+		// MAX_WBITS + 32 で gzip/zlib 形式を自動判別
+		if (inflateInit2(&strm, 15 + 32) != Z_OK) throw std::runtime_error("inflateInit failed");
+
+		int ret = inflate(&strm, Z_FINISH);
+		inflateEnd(&strm);
+
+		if (ret != Z_STREAM_END && ret != Z_OK) {
+			throw std::runtime_error("Decompression failed. Error code: " + std::to_string(ret));
+		}
 	}
-	else rfs.read((char*)vol.data.data(), vol.data.size() * 4);
-	float minV = vol.data[0], maxV = vol.data[0];
-	for (float v : vol.data) { if (v < minV) minV = v; if (v > maxV) maxV = v; }
-	for (float& v : vol.data) v = (v - minV) / (maxV - minV);
+	else {
+		// --- 通常の読み込み ---
+		rfs.read((char*)buffer.data(), voxelCount * sizeof(short));
+	}
+
+	// 4. floatへの変換と正規化 (0.0 - 1.0)
+	float minV = (float)buffer[0], maxV = (float)buffer[0];
+	for (short v : buffer) {
+		if ((float)v < minV) minV = (float)v;
+		if ((float)v > maxV) maxV = (float)v;
+	}
+	float range = (maxV - minV > 0) ? (maxV - minV) : 1.0f;
+	for (size_t i = 0; i < voxelCount; ++i) {
+		vol.data[i] = ((float)buffer[i] - minV) / range;
+	}
+
 	return vol;
 }
 
@@ -458,8 +509,8 @@ int main() {
 	try {
 		Timer total;
 		std::cout << "Loading images..." << std::endl;
-		Image3D fixed = loadFromMHD("MRBrainTumor1.mhd");
-		Image3D moving = loadFromMHD("MRBrainTumor2.mhd");
+		Image3D fixed = loadFromMHD("MRBrainTumor1_zraw.mhd");
+		Image3D moving = loadFromMHD("MRBrainTumor2_zraw.mhd");
 
 		Mattes3DRegistrationAnalytic reg;
 		float p_res[6] = { 0, 0, 0, 0, 0, 0 };
