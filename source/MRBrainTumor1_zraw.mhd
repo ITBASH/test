@@ -1,0 +1,17 @@
+ObjectType = Image
+NDims = 3
+BinaryData = True
+BinaryDataByteOrderMSB = False
+CompressedData = True
+CompressedDataSize = 5268677
+TransformMatrix = 1 0 0 0 1 0 0 0 1
+Offset = -119.53100000000005 -119.53099999999999 -77.700000000000003
+CenterOfRotation = 0 0 0
+AnatomicalOrientation = RAI
+ElementSpacing = 0.93750000000000022 0.93750000000000022 1.4000000000000001
+ITK_InputFilterName = MetaImageIO
+ITK_original_direction = 1 0 0 0 1 0 0 0 1
+ITK_original_spacing = 0.9375 0.9375 1.4
+DimSize = 256 256 112
+ElementType = MET_SHORT
+ElementDataFile = MRBrainTumor1_zraw.zraw
